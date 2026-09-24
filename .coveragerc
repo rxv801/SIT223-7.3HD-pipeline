@@ -1,0 +1,13 @@
+[run]
+source = cv, main
+omit =
+    # Manual harnesses, run by hand with an image path — superseded by tests/.
+    cv/*_test.py
+    # Opens a webcam, so it cannot run headless in CI or on the server.
+    cv/camera.py
+    cv/detection_loop.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:

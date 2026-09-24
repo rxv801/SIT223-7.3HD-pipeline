@@ -1,0 +1,9 @@
+# Test-only dependencies.
+#
+# Kept out of requirements.txt so requirements.lock — which the Security stage
+# scans and the Deploy stage installs — describes only what actually ships.
+# scripts/build.sh installs these after freezing the lock.
+
+pytest==8.4.2               # test runner; emits JUnit XML for the Jenkins junit plugin
+pytest-cov==7.0.0           # coverage.xml for the SonarCloud quality gate
+httpx==0.28.1               # required by fastapi.testclient for HTTP + WebSocket tests

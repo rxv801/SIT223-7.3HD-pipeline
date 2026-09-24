@@ -48,10 +48,13 @@ echo "==> Interpreter: $("$PYTHON_BIN" -V)"
 # part of the path, so changing a dependency builds a fresh venv automatically
 # and leaves the old one untouched.
 # ---------------------------------------------------------------------------
-REQ_HASH="$(shasum -a 256 requirements.txt | cut -c1-12)"
+REQ_HASH="$(cat requirements.txt requirements-dev.txt \
+    | sed -e 's/#.*//' -e '/^[[:space:]]*$/d' \
+    | shasum -a 256 | cut -c1-12)"
 VENV="${CACHE_DIR}/venv-${REQ_HASH}"
+LOCK_CACHE="${CACHE_DIR}/requirements-${REQ_HASH}.lock"
 
-if [ -x "${VENV}/bin/python" ]; then
+if [ -x "${VENV}/bin/python" ] && [ -f "$LOCK_CACHE" ]; then
     echo "==> Reusing cached venv (requirements ${REQ_HASH})"
 else
     echo "==> Building venv (requirements ${REQ_HASH}) — first run downloads ~500MB"
@@ -60,6 +63,13 @@ else
     "$PYTHON_BIN" -m venv "$VENV"
     "${VENV}/bin/python" -m pip install --upgrade pip --quiet
     "${VENV}/bin/pip" install -r requirements.txt
+
+    # Freeze BEFORE the test tooling goes in, so the lock describes only what
+    # ships. The Security stage scans this file and Deploy installs from it —
+    # neither should see pytest.
+    "${VENV}/bin/pip" freeze > "$LOCK_CACHE"
+
+    "${VENV}/bin/pip" install -r requirements-dev.txt
 fi
 
 # ---------------------------------------------------------------------------
@@ -100,14 +110,16 @@ echo "==> Compiling sources"
 "${VENV}/bin/python" -m compileall -q main.py cv
 
 # ---------------------------------------------------------------------------
-# 5. Lock resolved versions.
+# 5. Publish the runtime lock into the workspace.
 #
-# requirements.txt uses floors (>=), so the same file resolves differently over
-# time. The lock records what this build actually installed — it's what the
-# security stage scans and what Deploy installs, so all three agree.
+# requirements.txt still uses floors (>=) for most packages, so the same file
+# resolves differently over time. The lock records what this build actually
+# installed — it's what the Security stage scans and what Deploy installs, so
+# all three agree. It was frozen during venv creation, before the test tooling
+# was added, and cached alongside the venv.
 # ---------------------------------------------------------------------------
-echo "==> Freezing dependency versions"
-"${VENV}/bin/pip" freeze > requirements.lock
+echo "==> Publishing dependency lock"
+cp "$LOCK_CACHE" requirements.lock
 
 # ---------------------------------------------------------------------------
 # 6. Artefact.

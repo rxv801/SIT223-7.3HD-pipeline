@@ -8,7 +8,11 @@
 #   pip install -r requirements.txt
 
 # --- Computer vision (needed now: phone + gaze detection) ---
-opencv-python>=4.9          # webcam capture + image ops
+# opencv-python is deliberately NOT listed. mediapipe already depends on
+# opencv-contrib-python, which is a superset of it, and installing both writes
+# two copies into the same cv2/ package -- ~46MB of redundancy, and two sets of
+# files that must be uninstalled together or the install is left broken.
+# Letting mediapipe pull opencv-contrib-python alone keeps one clean install.
 # Pinned, not floored: mediapipe 1.0.x aborts natively (DrishtiMetalHelper
 # "Service is unavailable") when the face-detector subgraph initialises Metal
 # in a headless process, which is how CI and the deployed worker both run it.

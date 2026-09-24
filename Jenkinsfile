@@ -40,6 +40,20 @@ pipeline {
             }
         }
 
+        stage('Test') {
+            steps {
+                sh './scripts/test.sh'
+            }
+            post {
+                always {
+                    // Publish results even when tests fail, so the console is
+                    // not the only place the failure is visible.
+                    junit testResults: 'reports/junit.xml', allowEmptyResults: false
+                    archiveArtifacts artifacts: 'reports/coverage.xml', allowEmptyArchive: true
+                }
+            }
+        }
+
     }
 
     post {
