@@ -1,0 +1,27 @@
+# Build output
+dist/
+build/
+VERSION
+requirements.lock
+
+# Models are fetched by scripts/build.sh, never committed (35MB binary)
+models/
+*.onnx
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Test / coverage output
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Security scan reports
+reports/
+
+# OS
+.DS_Store

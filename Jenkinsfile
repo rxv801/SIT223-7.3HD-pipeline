@@ -1,0 +1,50 @@
+// SIT223 7.3HD — DevOps pipeline for the Taskmaster CV worker.
+//
+// Stage logic lives in scripts/*.sh rather than inline Groovy, so each stage can
+// be run and debugged from a terminal without a Jenkins build.
+
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        // Keep the last 15 builds; each archives a ~39MB artefact.
+        buildDiscarder(logRotator(numToKeepStr: '15'))
+        timeout(time: 30, unit: 'MINUTES')
+    }
+
+    triggers {
+        // Jenkins listens on 127.0.0.1, so GitHub webhooks cannot reach it.
+        // Poll instead: every 5 minutes, build only if the SHA changed.
+        pollSCM('H/5 * * * *')
+    }
+
+    environment {
+        // Homebrew binaries (python@3.11, curl, git) are not on Jenkins' default PATH.
+        PATH = "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    }
+
+    stages {
+
+        stage('Build') {
+            steps {
+                sh './scripts/build.sh'
+            }
+            post {
+                success {
+                    // fingerprint lets Jenkins trace this exact artefact through
+                    // the Deploy and Release stages later.
+                    archiveArtifacts artifacts: 'dist/*.tar.gz, VERSION, requirements.lock',
+                                     fingerprint: true
+                }
+            }
+        }
+
+    }
+
+    post {
+        success { echo "Pipeline OK — build ${env.BUILD_NUMBER}" }
+        failure { echo "Pipeline FAILED at stage: ${env.STAGE_NAME}" }
+        always  { echo "Finished: ${currentBuild.currentResult}" }
+    }
+}
