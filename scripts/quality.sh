@@ -72,51 +72,73 @@ echo "==> Running SonarCloud analysis"
 #
 # The SonarQube Jenkins plugin (and its waitForQualityGate step) is not
 # installed on this controller, so the gate is enforced by polling the web API
-# directly. The scanner leaves the background task id in report-task.txt;
-# wait for that task to finish, then read the gate status off the analysis.
+# directly.
+#
+# Two things the obvious implementation gets wrong, both found the hard way:
+#   - api/ce/task returns 404 "Project doesn't exist" here, so the scanner's
+#     task id is not a usable handle; poll the project's gate status instead
+#     and wait for an analysis newer than this build.
+#   - SonarCloud rejects `curl -u <token>:` and answers with an empty body,
+#     which a naive json.load reports as a confusing parse error. Use a Bearer
+#     header, and check the HTTP status before parsing.
 #
 # Without this the stage would only ever *submit* an analysis and pass
-# regardless of the result, which is the failure mode this pipeline exists to
+# regardless of the verdict, which is the failure mode this pipeline exists to
 # avoid.
 # ---------------------------------------------------------------------------
-REPORT_TASK=".scannerwork/report-task.txt"
-if [ ! -f "$REPORT_TASK" ]; then
-    echo "ERROR: ${REPORT_TASK} not written — scanner did not submit an analysis." >&2
-    exit 1
-fi
+SONAR_API="https://sonarcloud.io/api"
+PROJECT_KEY="$(grep '^sonar.projectKey=' sonar-project.properties | cut -d= -f2-)"
 
-CE_TASK_ID="$(grep '^ceTaskId=' "$REPORT_TASK" | cut -d= -f2-)"
-SONAR_URL="$(grep '^serverUrl=' "$REPORT_TASK" | cut -d= -f2-)"
+# Anything analysed before this instant is a previous run's result.
+STARTED_AT="$(date -u +%s)"
 
-echo "==> Waiting for analysis ${CE_TASK_ID} to finish"
-ANALYSIS_ID=""
-for _ in $(seq 1 60); do
-    TASK_JSON="$(curl -fsS -u "${SONAR_TOKEN}:" "${SONAR_URL}/api/ce/task?id=${CE_TASK_ID}")"
-    STATUS="$(printf '%s' "$TASK_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["task"]["status"])')"
+sonar_get() {
+    # Echo the body; return non-zero (and report) on any non-200.
+    local path="$1"
+    local body code
+    body="$(curl -sS -w '\n%{http_code}' --max-time 30 \
+        -H "Authorization: Bearer ${SONAR_TOKEN}" "${SONAR_API}/${path}")" || return 1
+    code="${body##*$'\n'}"
+    body="${body%$'\n'*}"
+    if [ "$code" != "200" ]; then
+        echo "ERROR: GET ${path} -> HTTP ${code}" >&2
+        echo "       ${body}" >&2
+        return 1
+    fi
+    printf '%s' "$body"
+}
 
-    case "$STATUS" in
-        SUCCESS)
-            ANALYSIS_ID="$(printf '%s' "$TASK_JSON" \
-                | python3 -c 'import json,sys; print(json.load(sys.stdin)["task"].get("analysisId",""))')"
+echo "==> Waiting for SonarCloud to process the analysis"
+ANALYSIS_FRESH=""
+for _ in $(seq 1 40); do
+    if ANALYSES="$(sonar_get "project_analyses/search?project=${PROJECT_KEY}&ps=1")"; then
+        ANALYSED_AT="$(printf '%s' "$ANALYSES" | python3 -c '
+import datetime, json, sys
+
+analyses = json.load(sys.stdin).get("analyses", [])
+if not analyses:
+    print(0)
+else:
+    # e.g. 2026-09-24T17:54:06+1000
+    stamp = analyses[0]["date"]
+    print(int(datetime.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%S%z").timestamp()))
+')"
+        if [ "$ANALYSED_AT" -ge "$STARTED_AT" ]; then
+            ANALYSIS_FRESH="yes"
             break
-            ;;
-        FAILED|CANCELED)
-            echo "ERROR: SonarCloud analysis ${STATUS}" >&2
-            exit 1
-            ;;
-    esac
+        fi
+    fi
     sleep 5
 done
 
-if [ -z "$ANALYSIS_ID" ]; then
-    echo "ERROR: analysis did not complete within 5 minutes" >&2
+if [ -z "$ANALYSIS_FRESH" ]; then
+    echo "ERROR: no analysis newer than this build appeared within ~3 minutes" >&2
     exit 1
 fi
 
-GATE_JSON="$(curl -fsS -u "${SONAR_TOKEN}:" \
-    "${SONAR_URL}/api/qualitygates/project_status?analysisId=${ANALYSIS_ID}")"
+GATE_JSON="$(sonar_get "qualitygates/project_status?projectKey=${PROJECT_KEY}")"
 
-printf '%s' "$GATE_JSON" | python3 - <<'PY'
+printf '%s' "$GATE_JSON" | python3 - <<'PYGATE'
 import json
 import sys
 
@@ -133,6 +155,6 @@ for condition in status.get("conditions", []):
 
 if status["status"] != "OK":
     sys.exit(1)
-PY
+PYGATE
 
 echo "==> Code quality OK"
