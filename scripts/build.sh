@@ -11,9 +11,15 @@ set -euo pipefail
 
 VERSION="1.0.${BUILD_NUMBER:-dev}"
 CACHE_DIR="${HOME}/.jenkins-cache/sit223-7.3hd"
-MODEL_URL="https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.onnx"
-MODEL_MIN_BYTES=30000000          # sanity floor: a real yolox_s.onnx is ~35MB
 DIST_DIR="dist"
+
+# Both detector models are gitignored (*.onnx, *.task) because they are large
+# binaries. Each entry is "filename|url|minimum plausible size in bytes".
+# Same sources as the project's own setup.sh.
+MODELS=(
+  "yolox_s.onnx|https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_s.onnx|30000000"
+  "face_landmarker.task|https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task|3000000"
+)
 
 cd "$(dirname "$0")/.."
 echo "==> Build ${VERSION}"
@@ -57,31 +63,35 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. YOLOX model.
+# 3. Detector models.
 #
-# *.onnx is gitignored (correctly — it's 35MB of binary), so a fresh clone has
-# no model and every phone-detection test would fail. Fetch once, cache it, and
-# size-check the result so a truncated download or an HTML error page can't
+# Both are gitignored, so a fresh clone has neither: phone detection needs
+# yolox_s.onnx and gaze detection needs face_landmarker.task. Fetch once, cache
+# them, and size-check each so a truncated download or an HTML error page can't
 # masquerade as a model.
 # ---------------------------------------------------------------------------
-MODEL_CACHE="${CACHE_DIR}/yolox_s.onnx"
-if [ -f "$MODEL_CACHE" ] && [ "$(stat -f%z "$MODEL_CACHE")" -ge "$MODEL_MIN_BYTES" ]; then
-    echo "==> Reusing cached model"
-else
-    echo "==> Downloading YOLOX-S model"
-    mkdir -p "$CACHE_DIR"
-    curl -fsSL --retry 3 -o "${MODEL_CACHE}.tmp" "$MODEL_URL"
-    SIZE="$(stat -f%z "${MODEL_CACHE}.tmp")"
-    if [ "$SIZE" -lt "$MODEL_MIN_BYTES" ]; then
-        rm -f "${MODEL_CACHE}.tmp"
-        echo "ERROR: model download was only ${SIZE} bytes — expected >= ${MODEL_MIN_BYTES}" >&2
-        exit 1
+mkdir -p models "$CACHE_DIR"
+for entry in "${MODELS[@]}"; do
+    IFS='|' read -r NAME URL MIN_BYTES <<< "$entry"
+    CACHED="${CACHE_DIR}/${NAME}"
+
+    if [ -f "$CACHED" ] && [ "$(stat -f%z "$CACHED")" -ge "$MIN_BYTES" ]; then
+        echo "==> Reusing cached ${NAME}"
+    else
+        echo "==> Downloading ${NAME}"
+        curl -fsSL --retry 3 -o "${CACHED}.tmp" "$URL"
+        SIZE="$(stat -f%z "${CACHED}.tmp")"
+        if [ "$SIZE" -lt "$MIN_BYTES" ]; then
+            rm -f "${CACHED}.tmp"
+            echo "ERROR: ${NAME} download was only ${SIZE} bytes — expected >= ${MIN_BYTES}" >&2
+            exit 1
+        fi
+        mv "${CACHED}.tmp" "$CACHED"
     fi
-    mv "${MODEL_CACHE}.tmp" "$MODEL_CACHE"
-fi
-mkdir -p models
-cp "$MODEL_CACHE" models/yolox_s.onnx
-echo "==> Model staged: $(stat -f%z models/yolox_s.onnx) bytes"
+
+    cp "$CACHED" "models/${NAME}"
+    echo "==> Staged models/${NAME} ($(stat -f%z "models/${NAME}") bytes)"
+done
 
 # ---------------------------------------------------------------------------
 # 4. Compile check — the actual build gate for an interpreted project.

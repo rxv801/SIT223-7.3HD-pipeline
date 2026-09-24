@@ -9,7 +9,12 @@
 
 # --- Computer vision (needed now: phone + gaze detection) ---
 opencv-python>=4.9          # webcam capture + image ops
-mediapipe>=0.10.9           # face mesh for gaze detection (planned)
+# Pinned, not floored: mediapipe 1.0.x aborts natively (DrishtiMetalHelper
+# "Service is unavailable") when the face-detector subgraph initialises Metal
+# in a headless process, which is how CI and the deployed worker both run it.
+# 0.10.35 is the version the desktop app ships and the last one verified
+# working headless on macOS arm64.
+mediapipe==0.10.35          # face mesh for gaze detection
 onnxruntime>=1.17           # runs the YOLOX phone-detection model (local, MIT)
 numpy>=1.26,<2.0            # array math; pinned <2 for MediaPipe compatibility
 
