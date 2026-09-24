@@ -80,6 +80,12 @@ pipeline {
             }
         }
 
+        stage('Deploy') {
+            steps {
+                sh './scripts/deploy.sh staging'
+            }
+        }
+
     }
 
     post {
