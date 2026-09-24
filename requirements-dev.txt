@@ -4,7 +4,15 @@
 # scans and the Deploy stage installs — describes only what actually ships.
 # scripts/build.sh installs these after freezing the lock.
 
-pytest==8.4.2               # test runner; emits JUnit XML for the Jenkins junit plugin
+pytest==9.0.3               # test runner; emits JUnit XML for the Jenkins junit plugin
+                            # 9.0.3 fixes CVE-2025-71176 (predictable /tmp/pytest-of-*)
 pytest-cov==7.0.0           # coverage.xml for the SonarCloud quality gate
 httpx==0.28.1               # required by fastapi.testclient for HTTP + WebSocket tests
 ruff==0.14.6                # fast local lint, runs in the Code Quality stage
+bandit==1.9.2               # Python SAST for the Security stage
+pip-audit==2.9.0            # dependency CVE scan against requirements.lock
+
+# Not imported by anything here, but present in every venv and flagged by
+# pip-audit: CVE-2026-59890, MANIFEST.in exclusions bypassed on macOS APFS
+# via Unicode NFD/NFC mismatch.
+setuptools>=83.0.0

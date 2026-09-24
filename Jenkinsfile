@@ -68,6 +68,18 @@ pipeline {
             }
         }
 
+        stage('Security') {
+            steps {
+                sh './scripts/security.sh'
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'reports/bandit.json, reports/pip-audit-*.json',
+                                     allowEmptyArchive: true
+                }
+            }
+        }
+
     }
 
     post {
