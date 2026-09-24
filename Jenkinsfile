@@ -92,6 +92,12 @@ pipeline {
             }
         }
 
+        stage('Monitoring') {
+            steps {
+                sh './scripts/monitoring.sh'
+            }
+        }
+
     }
 
     post {
