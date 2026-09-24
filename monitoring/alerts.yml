@@ -1,0 +1,65 @@
+# Alert rules for the Taskmaster CV worker.
+#
+# `up` is synthesised by Prometheus on every scrape: 1 when the target
+# answered, 0 when it did not. It needs no cooperation from the application,
+# so it still fires when the process is gone entirely — which is exactly the
+# case that matters.
+
+groups:
+  - name: taskmaster-availability
+    rules:
+      - alert: ProductionDown
+        expr: up{job="taskmaster-prod"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Production CV worker is not responding"
+          description: >-
+            No successful scrape of 127.0.0.1:8765 for 30s. The worker has
+            stopped, crashed, or is refusing connections. Check
+            ~/taskmaster-deploy/prod/run.log, then roll back with
+            scripts/release.sh if a recent release caused it.
+
+      - alert: StagingDown
+        expr: up{job="taskmaster-staging"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Staging CV worker is not responding"
+          description: >-
+            Staging has been unreachable for 2m. Not user-facing, but the
+            Release stage refuses to promote while staging is unhealthy, so
+            this blocks deployments. Longer 'for' than production because a
+            deploy briefly restarts it.
+
+  - name: taskmaster-behaviour
+    rules:
+      - alert: DetectorErrors
+        expr: increase(taskmaster_detector_errors_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Detectors are raising exceptions"
+          description: >-
+            The WebSocket loop caught an exception inside a detector. The
+            service stays up and keeps accepting frames, so no availability
+            alert would notice, but results are being silently dropped.
+
+      - alert: HighRequestLatency
+        expr: >-
+          histogram_quantile(
+            0.95,
+            sum(rate(http_request_duration_seconds_bucket{job="taskmaster-prod"}[5m])) by (le)
+          ) > 2
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "95th percentile latency above 2s in production"
+          description: >-
+            Detection is taking far longer than the ~0.1s measured on this
+            hardware, which usually means CPU contention or a model reloading
+            on every frame.

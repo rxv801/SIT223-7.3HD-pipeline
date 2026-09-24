@@ -30,6 +30,8 @@ import cv2
 import numpy as np
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from prometheus_client import Counter
+from prometheus_fastapi_instrumentator import Instrumentator
 
 # The detectors. They run on a single frame and return protocol-shaped dicts.
 # Note: we do NOT import `camera` here — the browser is the camera now.
@@ -37,6 +39,35 @@ from cv import gaze_detector, phone_detector
 
 # The FastAPI application. uvicorn looks for this (`uvicorn main:app`).
 app = FastAPI()
+
+# ---------------------------------------------------------------------------
+# Metrics
+#
+# Exposes /metrics for Prometheus to scrape. The instrumentator supplies the
+# usual HTTP request/latency series; the counters below add what is specific to
+# this service, so a dashboard can distinguish "the process is up" from "the
+# detectors are actually producing results".
+# ---------------------------------------------------------------------------
+Instrumentator().instrument(app).expose(app, endpoint="/metrics")
+
+FRAMES_PROCESSED = Counter(
+    "taskmaster_frames_processed_total",
+    "Frames received on /ws and run through both detectors.",
+)
+DETECTIONS = Counter(
+    "taskmaster_detections_total",
+    "Detector results, labelled by detector and outcome.",
+    ["detector", "status"],
+)
+FRAMES_REJECTED = Counter(
+    "taskmaster_frames_rejected_total",
+    "Frames refused before processing, labelled by reason.",
+    ["reason"],
+)
+DETECTOR_ERRORS = Counter(
+    "taskmaster_detector_errors_total",
+    "Exceptions raised inside a detector while handling a frame.",
+)
 
 # Max accepted encoded frame size (bytes). The renderer sends JPEGs at ~640px,
 # so anything dramatically larger is treated as suspicious/misconfigured input.
@@ -94,6 +125,7 @@ async def detection_socket(websocket: WebSocket) -> None:
             # frame to process.
             frame_bytes = await websocket.receive_bytes()
             if len(frame_bytes) > MAX_FRAME_BYTES:
+                FRAMES_REJECTED.labels(reason="too_large").inc()
                 await websocket.close(code=1009, reason="Frame too large")
                 break
 
@@ -105,8 +137,13 @@ async def detection_socket(websocket: WebSocket) -> None:
                 phone_event = phone_detector.detect_phone(frame)
                 gaze_event = gaze_detector.detect_gaze(frame)
             except Exception as error:
+                DETECTOR_ERRORS.inc()
                 print(f"[cv-worker] detector error: {error}")
                 continue
+
+            FRAMES_PROCESSED.inc()
+            DETECTIONS.labels(detector="phone", status=phone_event["status"]).inc()
+            DETECTIONS.labels(detector="gaze", status=gaze_event["status"]).inc()
 
             # Send the two results back to the client as JSON text messages.
             await websocket.send_text(json.dumps(phone_event))

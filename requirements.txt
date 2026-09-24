@@ -26,3 +26,7 @@ numpy>=1.26,<2.0            # array math; pinned <2 for MediaPipe compatibility
 fastapi>=0.110              # app + routing for the detection-event server
 uvicorn[standard]>=0.27     # ASGI server that runs FastAPI
 websockets>=12.0            # WebSocket transport to the Electron main process
+
+# --- Monitoring ---
+prometheus-fastapi-instrumentator>=7.0   # exposes /metrics for Prometheus
+prometheus-client>=0.21                  # custom counters for detector outcomes
