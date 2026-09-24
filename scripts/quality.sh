@@ -74,12 +74,9 @@ echo "==> Running SonarCloud analysis"
 # installed on this controller, so the gate is enforced by polling the web API
 # directly.
 #
-# Three things the obvious implementation gets wrong, all found the hard way:
-#   - api/ce/task returns 404 "Project doesn't exist" here, so the scanner's
-#     task id is not a usable handle.
-#   - SonarCloud rejects `curl -u <token>:` and answers with an empty body,
-#     which a naive json.load reports as a confusing parse error. Use a Bearer
-#     header, and check the HTTP status before parsing.
+# Two things the obvious implementation gets wrong:
+#   - api/ce/task answers 404 "Project doesn't exist", so the scanner's task id
+#     is not a usable handle for polling.
 #   - Waiting for an analysis "newer than now" never succeeds: the analysis is
 #     stamped when the scanner ran, which is before this check starts. Match on
 #     the analysed git revision instead.
@@ -91,85 +88,67 @@ echo "==> Running SonarCloud analysis"
 SONAR_API="https://sonarcloud.io/api"
 PROJECT_KEY="$(grep '^sonar.projectKey=' sonar-project.properties | cut -d= -f2-)"
 
+# Unauthenticated: the project is public, so both endpoints answer without a
+# token and there is nothing for credentials to add here.
 sonar_get() {
-    # Echo the body; return non-zero (and report) on any non-200.
-    local path="$1"
-    local body code
-    body="$(curl -sS -w '\n%{http_code}' --max-time 30 \
-        -H "Authorization: Bearer ${SONAR_TOKEN}" "${SONAR_API}/${path}")" || return 1
-    code="${body##*$'\n'}"
-    body="${body%$'\n'*}"
-    if [ "$code" != "200" ]; then
-        echo "ERROR: GET ${path} -> HTTP ${code}" >&2
-        echo "       ${body}" >&2
-        return 1
-    fi
-    # A 200 with nothing in it is not success. Report it rather than handing an
-    # empty string to a JSON parser, which fails several frames away from the
-    # actual cause.
-    if [ -z "$body" ]; then
-        echo "ERROR: GET ${path} -> HTTP 200 but empty body" >&2
-        return 1
-    fi
-    printf '%s' "$body"
+    curl -sS --max-time 30 "${SONAR_API}/$1"
 }
 
-# Match on the analysed git revision, not on time. The analysis is stamped
-# when the scanner ran, which is necessarily *before* this check starts, so a
-# "newer than now" comparison can never succeed.
+# Match on the analysed git revision, not on time: the analysis is stamped when
+# the scanner ran, which is necessarily before this check starts, so a "newer
+# than now" comparison can never succeed.
 REVISION="$(git rev-parse HEAD)"
 
 echo "==> Waiting for SonarCloud to process revision ${REVISION:0:8}"
-ANALYSIS_FRESH=""
+GATE_JSON=""
 for _ in $(seq 1 40); do
-    if ANALYSES="$(sonar_get "project_analyses/search?project=${PROJECT_KEY}&ps=5")"; then
-        # Tolerate an empty or unparseable body: SonarCloud occasionally
-        # answers 200 with nothing while it is still ingesting a report, and
-        # a crash here would fail a build whose analysis is merely slow.
-        if printf '%s' "$ANALYSES" | REVISION="$REVISION" python3 -c '
+    if GATE_JSON="$(sonar_get "qualitygates/project_status?projectKey=${PROJECT_KEY}")" \
+        && printf '%s' "$GATE_JSON" | python3 -c '
+import json, sys
+try:
+    json.load(sys.stdin)["projectStatus"]["status"]
+except Exception:
+    sys.exit(1)
+'; then
+        # The gate is readable; make sure it reflects THIS revision before
+        # trusting it, otherwise a stale green from the previous build passes.
+        if ANALYSES="$(sonar_get "project_analyses/search?project=${PROJECT_KEY}&ps=5")" \
+            && printf '%s' "$ANALYSES" | REVISION="$REVISION" python3 -c '
 import json, os, sys
-
 try:
     analyses = json.load(sys.stdin).get("analyses", [])
-except (json.JSONDecodeError, ValueError):
+except Exception:
     sys.exit(1)
-
-wanted = os.environ["REVISION"]
-sys.exit(0 if any(a.get("revision") == wanted for a in analyses) else 1)
+sys.exit(0 if any(a.get("revision") == os.environ["REVISION"] for a in analyses) else 1)
 '; then
-            ANALYSIS_FRESH="yes"
             break
         fi
     fi
+    GATE_JSON=""
     sleep 5
 done
 
-if [ -z "$ANALYSIS_FRESH" ]; then
-    echo "ERROR: no analysis for revision ${REVISION:0:8} appeared within ~3 minutes" >&2
+if [ -z "$GATE_JSON" ]; then
+    echo "ERROR: no quality gate for revision ${REVISION:0:8} within ~3 minutes" >&2
     exit 1
 fi
 
-# The gate is readable without a token on a public project. Try authenticated
-# first, then fall back: a token scoped to another project answers 200 with an
-# empty body here rather than a 403, which is indistinguishable from success
-# until something tries to parse it.
-if ! GATE_JSON="$(sonar_get "qualitygates/project_status?projectKey=${PROJECT_KEY}")"; then
-    echo "==> Authenticated gate read failed; retrying unauthenticated (public project)"
-    GATE_JSON="$(curl -sS --max-time 30 \
-        "${SONAR_API}/qualitygates/project_status?projectKey=${PROJECT_KEY}")"
-fi
-
-printf '%s' "$GATE_JSON" | python3 - <<'PYGATE'
+# The JSON is passed by environment, not on stdin: `python3 - <<'EOF'` takes
+# the *program* from stdin, so a piped payload is swallowed by the heredoc and
+# sys.stdin.read() comes back empty.
+GATE_JSON="$GATE_JSON" python3 - <<'PYGATE'
 import json
+import os
 import sys
 
-raw = sys.stdin.read()
+raw = os.environ["GATE_JSON"]
 try:
     status = json.loads(raw)["projectStatus"]
 except (KeyError, ValueError):
     print("ERROR: could not read quality gate status from SonarCloud.")
     print(f"       response ({len(raw)} bytes): {raw[:500]!r}")
     sys.exit(1)
+
 print(f"==> Quality gate: {status['status']}")
 
 for condition in status.get("conditions", []):
