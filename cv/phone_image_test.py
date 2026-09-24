@@ -1,6 +1,6 @@
 import sys
-import cv2
 
+import cv2
 from phone_detector import detect_phone
 
 

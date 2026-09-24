@@ -26,7 +26,6 @@ import time
 import camera
 import phone_detector
 
-
 # How many times per second we sample the webcam. 10 fps is plenty for
 # detecting something as slow as "is the user holding a phone", and it keeps
 # CPU usage low. Derived sleep below is 1 / this.

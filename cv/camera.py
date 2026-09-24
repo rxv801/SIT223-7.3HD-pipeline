@@ -8,7 +8,6 @@ Other modules import this file and call its public functions:
 # OpenCV — the library that talks to the webcam hardware
 import cv2
 
-
 # ---------------------------------------------------------------------------
 # Module-level state (shared across the whole program)
 # Underscore prefix means "private — do not touch from outside this file".

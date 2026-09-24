@@ -7,3 +7,4 @@
 pytest==8.4.2               # test runner; emits JUnit XML for the Jenkins junit plugin
 pytest-cov==7.0.0           # coverage.xml for the SonarCloud quality gate
 httpx==0.28.1               # required by fastapi.testclient for HTTP + WebSocket tests
+ruff==0.14.6                # fast local lint, runs in the Code Quality stage

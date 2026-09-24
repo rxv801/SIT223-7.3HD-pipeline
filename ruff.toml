@@ -1,0 +1,17 @@
+# Lint config for the Code Quality stage.
+#
+# Deliberately close to defaults: the point is to report real problems in the
+# worker, not to impose a house style on code that already exists.
+
+target-version = "py311"
+line-length = 100
+
+exclude = ["dist", "build", "models", "scripts/pythonpath"]
+
+[lint]
+# pycodestyle errors, pyflakes, isort, bugbear, comprehensions, pyupgrade.
+select = ["E", "F", "I", "B", "C4", "UP"]
+
+[lint.per-file-ignores]
+# Tests assert on values that ruff would rather see compared differently.
+"tests/*" = ["E712"]

@@ -54,6 +54,17 @@ pipeline {
             }
         }
 
+        stage('Code Quality') {
+            steps {
+                // SONAR_TOKEN is an existing Jenkins credential, reused from
+                // the 7.1C/8.2C pipeline. Tokens are account-scoped, so it
+                // covers this project too.
+                withCredentials([string(credentialsId: 'SONAR_TOKEN', variable: 'SONAR_TOKEN')]) {
+                    sh './scripts/quality.sh'
+                }
+            }
+        }
+
     }
 
     post {

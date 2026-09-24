@@ -13,7 +13,6 @@ Press 'q' (video window focused) or Ctrl+C to quit.
 """
 
 import cv2
-
 import gaze_detector
 
 

@@ -12,7 +12,6 @@ from starlette.websockets import WebSocketDisconnect
 
 from main import MAX_FRAME_BYTES, decode_frame
 
-
 # ---------------------------------------------------------------------------
 # Health endpoint — what the Deploy stage polls to decide a rollout succeeded.
 # ---------------------------------------------------------------------------

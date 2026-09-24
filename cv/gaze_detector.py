@@ -28,11 +28,10 @@ import time
 from typing import Any
 
 import cv2
-import numpy as np
 import mediapipe as mp
+import numpy as np
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision
-
 
 # ---------------------------------------------------------------------------
 # Config

@@ -28,14 +28,12 @@ import json
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import uvicorn
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 # The detectors. They run on a single frame and return protocol-shaped dicts.
 # Note: we do NOT import `camera` here — the browser is the camera now.
-from cv import phone_detector
-from cv import gaze_detector
-
+from cv import gaze_detector, phone_detector
 
 # The FastAPI application. uvicorn looks for this (`uvicorn main:app`).
 app = FastAPI()
