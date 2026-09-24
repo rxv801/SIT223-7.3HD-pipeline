@@ -11,6 +11,9 @@ pipeline {
         // Keep the last 15 builds; each archives a ~39MB artefact.
         buildDiscarder(logRotator(numToKeepStr: '15'))
         timeout(time: 30, unit: 'MINUTES')
+        // Two runs analysing the same SonarCloud project at once race each
+        // other; builds 8 and 9 collided that way.
+        disableConcurrentBuilds()
     }
 
     triggers {

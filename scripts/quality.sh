@@ -74,13 +74,15 @@ echo "==> Running SonarCloud analysis"
 # installed on this controller, so the gate is enforced by polling the web API
 # directly.
 #
-# Two things the obvious implementation gets wrong, both found the hard way:
+# Three things the obvious implementation gets wrong, all found the hard way:
 #   - api/ce/task returns 404 "Project doesn't exist" here, so the scanner's
-#     task id is not a usable handle; poll the project's gate status instead
-#     and wait for an analysis newer than this build.
+#     task id is not a usable handle.
 #   - SonarCloud rejects `curl -u <token>:` and answers with an empty body,
 #     which a naive json.load reports as a confusing parse error. Use a Bearer
 #     header, and check the HTTP status before parsing.
+#   - Waiting for an analysis "newer than now" never succeeds: the analysis is
+#     stamped when the scanner ran, which is before this check starts. Match on
+#     the analysed git revision instead.
 #
 # Without this the stage would only ever *submit* an analysis and pass
 # regardless of the verdict, which is the failure mode this pipeline exists to
@@ -88,9 +90,6 @@ echo "==> Running SonarCloud analysis"
 # ---------------------------------------------------------------------------
 SONAR_API="https://sonarcloud.io/api"
 PROJECT_KEY="$(grep '^sonar.projectKey=' sonar-project.properties | cut -d= -f2-)"
-
-# Anything analysed before this instant is a previous run's result.
-STARTED_AT="$(date -u +%s)"
 
 sonar_get() {
     # Echo the body; return non-zero (and report) on any non-200.
@@ -108,22 +107,29 @@ sonar_get() {
     printf '%s' "$body"
 }
 
-echo "==> Waiting for SonarCloud to process the analysis"
+# Match on the analysed git revision, not on time. The analysis is stamped
+# when the scanner ran, which is necessarily *before* this check starts, so a
+# "newer than now" comparison can never succeed.
+REVISION="$(git rev-parse HEAD)"
+
+echo "==> Waiting for SonarCloud to process revision ${REVISION:0:8}"
 ANALYSIS_FRESH=""
 for _ in $(seq 1 40); do
-    if ANALYSES="$(sonar_get "project_analyses/search?project=${PROJECT_KEY}&ps=1")"; then
-        ANALYSED_AT="$(printf '%s' "$ANALYSES" | python3 -c '
-import datetime, json, sys
+    if ANALYSES="$(sonar_get "project_analyses/search?project=${PROJECT_KEY}&ps=5")"; then
+        # Tolerate an empty or unparseable body: SonarCloud occasionally
+        # answers 200 with nothing while it is still ingesting a report, and
+        # a crash here would fail a build whose analysis is merely slow.
+        if printf '%s' "$ANALYSES" | REVISION="$REVISION" python3 -c '
+import json, os, sys
 
-analyses = json.load(sys.stdin).get("analyses", [])
-if not analyses:
-    print(0)
-else:
-    # e.g. 2026-09-24T17:54:06+1000
-    stamp = analyses[0]["date"]
-    print(int(datetime.datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%S%z").timestamp()))
-')"
-        if [ "$ANALYSED_AT" -ge "$STARTED_AT" ]; then
+try:
+    analyses = json.load(sys.stdin).get("analyses", [])
+except (json.JSONDecodeError, ValueError):
+    sys.exit(1)
+
+wanted = os.environ["REVISION"]
+sys.exit(0 if any(a.get("revision") == wanted for a in analyses) else 1)
+'; then
             ANALYSIS_FRESH="yes"
             break
         fi
@@ -132,7 +138,7 @@ else:
 done
 
 if [ -z "$ANALYSIS_FRESH" ]; then
-    echo "ERROR: no analysis newer than this build appeared within ~3 minutes" >&2
+    echo "ERROR: no analysis for revision ${REVISION:0:8} appeared within ~3 minutes" >&2
     exit 1
 fi
 
