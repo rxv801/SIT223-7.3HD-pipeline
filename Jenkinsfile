@@ -86,6 +86,12 @@ pipeline {
             }
         }
 
+        stage('Release') {
+            steps {
+                sh './scripts/release.sh'
+            }
+        }
+
     }
 
     post {
