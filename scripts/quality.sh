@@ -104,6 +104,13 @@ sonar_get() {
         echo "       ${body}" >&2
         return 1
     fi
+    # A 200 with nothing in it is not success. Report it rather than handing an
+    # empty string to a JSON parser, which fails several frames away from the
+    # actual cause.
+    if [ -z "$body" ]; then
+        echo "ERROR: GET ${path} -> HTTP 200 but empty body" >&2
+        return 1
+    fi
     printf '%s' "$body"
 }
 
@@ -142,13 +149,27 @@ if [ -z "$ANALYSIS_FRESH" ]; then
     exit 1
 fi
 
-GATE_JSON="$(sonar_get "qualitygates/project_status?projectKey=${PROJECT_KEY}")"
+# The gate is readable without a token on a public project. Try authenticated
+# first, then fall back: a token scoped to another project answers 200 with an
+# empty body here rather than a 403, which is indistinguishable from success
+# until something tries to parse it.
+if ! GATE_JSON="$(sonar_get "qualitygates/project_status?projectKey=${PROJECT_KEY}")"; then
+    echo "==> Authenticated gate read failed; retrying unauthenticated (public project)"
+    GATE_JSON="$(curl -sS --max-time 30 \
+        "${SONAR_API}/qualitygates/project_status?projectKey=${PROJECT_KEY}")"
+fi
 
 printf '%s' "$GATE_JSON" | python3 - <<'PYGATE'
 import json
 import sys
 
-status = json.load(sys.stdin)["projectStatus"]
+raw = sys.stdin.read()
+try:
+    status = json.loads(raw)["projectStatus"]
+except (KeyError, ValueError):
+    print("ERROR: could not read quality gate status from SonarCloud.")
+    print(f"       response ({len(raw)} bytes): {raw[:500]!r}")
+    sys.exit(1)
 print(f"==> Quality gate: {status['status']}")
 
 for condition in status.get("conditions", []):
