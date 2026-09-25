@@ -64,8 +64,16 @@ else
     echo "==> Reusing cached sonar-scanner"
 fi
 
+# Retried once: the scanner reaches sonarcloud.io over the internet, and a
+# single socket timeout there fails a build that has nothing wrong with it.
+# Build #24 died exactly that way on /api/languages/list while the identical
+# commit before and after it passed. A real problem still fails on the retry.
 echo "==> Running SonarCloud analysis"
-"${SCANNER_DIR}/bin/sonar-scanner" -Dsonar.token="${SONAR_TOKEN}"
+if ! "${SCANNER_DIR}/bin/sonar-scanner" -Dsonar.token="${SONAR_TOKEN}"; then
+    echo "==> Scanner failed, retrying once in 10s"
+    sleep 10
+    "${SCANNER_DIR}/bin/sonar-scanner" -Dsonar.token="${SONAR_TOKEN}"
+fi
 
 # ---------------------------------------------------------------------------
 # 3. Quality gate.
