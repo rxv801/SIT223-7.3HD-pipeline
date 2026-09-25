@@ -1,120 +1,86 @@
-# Taskmaster — Python CV Worker
+# SIT223 7.3HD — Jenkins DevOps pipeline
 
-The computer-vision backend. It owns the webcam, runs the detectors
-(phone now, gaze next), and will stream detection events to the Electron
-app over a WebSocket.
+Saatvik Sharma (225158822)
 
-## Requirements
+A seven stage Jenkins pipeline built around the computer vision worker from
+[Taskmaster](https://github.com/rxv801/taskmaster), a desktop focus tracker.
+The worker takes webcam frames over a WebSocket and returns two results per
+frame: whether a phone is visible, and whether the user is looking at the
+screen.
 
-- **Python 3.11** — MediaPipe has no wheels for 3.13/3.14, so the venv
-  must be built with `python3.11`.
-- Dependencies live in [`requirements.txt`](requirements.txt).
+The worker code was extracted from the Taskmaster repository with
+`git subtree split`, so the commit history for it is preserved here.
 
-## Setup
+## The pipeline
 
-From the repo root, the easiest path is `./setup.sh`. To do just the
-Python side manually:
+Defined in [`Jenkinsfile`](Jenkinsfile). Each stage is one line calling a
+script in [`scripts/`](scripts), so any stage can be run from a terminal
+without starting a Jenkins build.
+
+| Stage | Script | What it does | What fails the build |
+|---|---|---|---|
+| Build | `build.sh` | pins Python 3.11, fetches both models, compiles, writes `requirements.lock`, builds a versioned tarball | syntax error, missing or truncated model |
+| Test | `test.sh` | 17 pytest tests, unit and integration | any failure, or coverage under 85% |
+| Code Quality | `quality.sh` | ruff, then SonarQube Cloud analysis | lint error, or a red quality gate |
+| Security | `security.sh` | Bandit on the source, pip-audit on the lock and on the build venv | any HIGH from Bandit, any CVE |
+| Deploy | `deploy.sh staging` | unpacks the artefact to port 8766, health check, smoke test | service does not start, or no detection |
+| Release | `release.sh` | tags the version, promotes the same artefact to port 8765 | unhealthy staging, or failed rollout |
+| Monitoring | `monitoring.sh` | validates and publishes Prometheus config, reloads, checks prod is scraped | invalid rules, or prod not being scraped |
+
+No stage swallows failures. There is no `|| true` anywhere in the pipeline.
+
+## Running it
+
+Requires macOS with Homebrew, Python 3.11, Jenkins LTS and Prometheus.
 
 ```bash
-cd python
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+brew install python@3.11 jenkins-lts prometheus
 ```
 
-The venv lives at `python/.venv` and is gitignored.
-
-## Running
+Each stage runs standalone:
 
 ```bash
-source .venv/bin/activate
-python cv/detection_loop.py        # Ctrl+C to stop
+./scripts/build.sh                 # produces dist/taskmaster-worker-1.0.dev.tar.gz
+./scripts/test.sh                  # needs build.sh first, for the venv and models
+SONAR_TOKEN=xxx ./scripts/quality.sh
+./scripts/security.sh
+./scripts/deploy.sh staging        # serves on 127.0.0.1:8766
+./scripts/release.sh               # promotes to 127.0.0.1:8765
+./scripts/monitoring.sh            # needs Prometheus running
 ```
 
-This opens the webcam, samples ~10 frames/sec, runs the phone detector on
-each frame, and prints the result. The camera is always released cleanly
-on exit.
+In Jenkins, create a Pipeline job with:
 
-## Module layout
+- Definition: Pipeline script from SCM
+- SCM: Git, this repository URL, branch `*/main`
+- Script path: `Jenkinsfile`
+- Build trigger: Poll SCM, `H/5 * * * *`
 
-```
-python/
-├── main.py                 # FastAPI + WebSocket server (not implemented yet)
-├── models/                 # detection model files (gitignored; fetched by setup.sh)
-│   ├── yolox_s.onnx        # YOLOX-S phone detector (Apache-2.0)
-│   └── face_landmarker.task# MediaPipe FaceLandmarker for gaze (Apache-2.0)
-└── cv/
-    ├── camera.py           # owns the webcam handle: start / read / stop
-    ├── detection_loop.py   # the loop: grab frame -> run detectors -> emit result
-    ├── phone_detector.py   # detect_phone(frame) -> event dict (YOLOX via onnxruntime)
-    ├── phone_detect_test.py# manual visual test: draws boxes on the webcam feed
-    ├── gaze_detector.py    # detect_gaze(frame) -> event dict (MediaPipe head pose)
-    └── gaze_detect_test.py # manual visual test: FOCUSED/DISTRACTED + head angles
-```
+The only credential needed is a SonarQube Cloud token stored as `SONAR_TOKEN`.
+Polling is used rather than a webhook because the Jenkins controller listens on
+`127.0.0.1`, which GitHub cannot reach.
 
-### Design: why `camera.py` and `detection_loop.py` are separate
+## Two models are downloaded, not committed
 
-Each module should have **one reason to change**:
+`yolox_s.onnx` (36 MB) for phone detection and `face_landmarker.task` (3.8 MB)
+for gaze. Both are gitignored, so a fresh clone has neither. `build.sh` fetches
+and caches them, and checks the size of each so a truncated download or an HTML
+error page cannot be saved as a model.
 
-- `camera.py` is a **resource owner** — it only cares about the webcam
-  hardware. It changes when capture concerns change.
-- `detection_loop.py` is **orchestration/policy** — sampling rate, which
-  detectors run, what happens to results. It changes when the detection
-  pipeline changes.
+## Security
 
-The dependency arrow points one way: `detection_loop` imports `camera` and
-the detectors; `camera` knows nothing about detection. This keeps the
-camera reusable (onboarding preview, calibration) and lets each piece be
-tested on its own.
+Findings and how each was handled are in [`SECURITY.md`](SECURITY.md).
 
-## Detection event shape
+## About the worker itself
 
-Every detector returns a dict matching the WebSocket protocol in
-[`PLAN.md`](../PLAN.md):
+The browser owns the camera and sends frames to Python, so Python never opens a
+camera. That keeps the detectors as pure functions and lets the whole service
+run headless, which is what makes it testable in CI.
 
-```python
-{ "type": "phone", "status": "none" | "detected",
-  "confidence": float, "timestamp": int }   # timestamp = ms since epoch
-```
+- `main.py` — FastAPI app, `/` health check, `/ws` detection socket, `/metrics`
+- `cv/phone_detector.py` — YOLOX-S via ONNX Runtime
+- `cv/gaze_detector.py` — MediaPipe FaceLandmarker head pose
+- `cv/camera.py`, `cv/detection_loop.py` — used by the desktop app, not by the service
 
-### Phone detection
-
-`phone_detector.detect_phone()` runs **YOLOX-S** (general COCO detector,
-Apache-2.0) locally via **onnxruntime** (MIT), and reports the `cell phone`
-class. Both are permissively licensed and bundle into a shipped app — no
-PyTorch, no AGPL (unlike Ultralytics YOLO).
-
-- `find_phones(frame)` → list of `(x1, y1, x2, y2, score)` boxes (perception).
-- `detect_phone(frame)` → the protocol event above.
-
-The detector is **perception only** — it answers "is there a phone in this
-frame?". Turning that into a *distracted* state (phone visible for N seconds)
-is policy that belongs in the loop/state layer, not here.
-
-The model file (`models/yolox_s.onnx`, ~34 MB) is gitignored and downloaded
-by `setup.sh`.
-
-### Gaze detection
-
-`gaze_detector.detect_gaze()` decides whether the user is looking at the
-screen, using **head pose** (which way the face points) from **MediaPipe
-FaceLandmarker** (Apache-2.0, local). Head pose is far more robust than
-eye/iris gaze to lighting, glasses, and distance.
-
-- `analyze_gaze(frame)` → detailed facts (angles, offsets, face count) for the test UI.
-- `detect_gaze(frame)` → the protocol event (`focused` / `distracted`).
-- `calibrate(frame)` / `reset_reference()` → manage the reference pose.
-
-Key behaviours:
-- **Auto-calibration** — the first frame with a face becomes the "looking at
-  screen" reference (0/0); later frames are judged as +/- deviation from it.
-  This makes it work with any camera angle, including off to the side.
-- **Multi-person tracking** — detects up to `NUM_FACES`, locks onto the
-  intended user (biggest/closest face), and follows them by position so other
-  people entering the frame don't steal the signal.
-- **Perception only** — answers "looking at screen *right now*?". The
-  "distracted after N seconds of looking away" timer is policy for the
-  loop/state layer.
-
-The model file (`models/face_landmarker.task`, ~3.6 MB) is gitignored and
-downloaded by `setup.sh`.
+MediaPipe is pinned to 0.10.35. Version 1.0.x aborts the interpreter when the
+face detector subgraph initialises Metal in a headless process.
